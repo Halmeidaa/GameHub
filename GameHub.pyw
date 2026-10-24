@@ -1,13 +1,7 @@
-"""GameHub: biblioteca de jogos para Windows.
-
-Arquivo unico: abra com Pythonw (sem console) ou gere GameHub.exe com criar_exe.bat.
-As informacoes ficam em %LOCALAPPDATA%/GameHub/jogos.json.
-"""
+"""GameHub - biblioteca de jogos para Windows."""
 
 
-# ---- Suporte a resolucao e escala de tela (DPI) ----
-
-"""Configuracao de DPI para texto nitido no Windows com escala 100/125/150/200%."""
+# Ajusta a escala da tela antes de carregar a interface.
 
 import ctypes
 import os
@@ -16,11 +10,10 @@ import traceback
 
 
 def enable_high_dpi() -> bool:
-    """Desativa a ampliacao borrada feita pelo Windows, antes do Tk iniciar.
+    """Evita que o Windows deixe os textos e botões borrados.
 
-    A primeira API aceita e per-monitor v2 (Windows 10+). Se ja houver
-    manifesto de DPI ou outro processo configurar DPI, a tentativa pode falhar
-    sem impedir a abertura do aplicativo.
+    Nem toda versão do Windows usa o mesmo ajuste, por isso tentamos
+    mais de uma opção antes de abrir a janela.
     """
     if sys.platform != "win32":
         return False
@@ -30,7 +23,7 @@ def enable_high_dpi() -> bool:
     except (AttributeError, OSError, ValueError):
         pass
     try:
-        # PROCESS_PER_MONITOR_DPI_AWARE = 2
+        # Segunda opção para versões do Windows que não aceitam o ajuste acima.
         if ctypes.windll.shcore.SetProcessDpiAwareness(2) == 0:
             return True
     except (AttributeError, OSError, ValueError):
@@ -42,7 +35,8 @@ def enable_high_dpi() -> bool:
 
 
 def ui_scale(window) -> float:
-    """Fator DPI (apenas dimensoes em pixels; fontes usam pontos do Tk)."""
+    """Lê a escala do monitor para dimensionar os elementos da janela."""
+    # Também dá para forçar uma escala pela variável de ambiente, se precisar.
     override = os.environ.get("GAMEHUB_UI_SCALE")
     if override:
         try:
@@ -63,9 +57,7 @@ def ui_scale(window) -> float:
         return 1.0
 
 
-# ---- Persistencia de jogos e horas jogadas ----
-
-"""Persistência local e operações simples da biblioteca de jogos."""
+# Os jogos cadastrados e o tempo de uso são guardados no próprio computador.
 
 import json
 import os
@@ -76,7 +68,7 @@ from uuid import uuid4
 
 
 def data_file() -> Path:
-    """Mantém os dados fora do repositório e do executável."""
+    """Escolhe onde salvar os cadastros, sem misturá-los aos arquivos do programa."""
     override = os.environ.get("GAMEHUB_DATA_DIR")
     if override:
         return Path(override) / "jogos.json"
@@ -109,6 +101,8 @@ class GameStore:
 
     def _save(self) -> None:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        # Salva primeiro em um arquivo temporário para não estragar o JSON
+        # caso a gravação seja interrompida no meio.
         temp = self.file_path.with_suffix(".tmp")
         temp.write_text(json.dumps(self.games, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(temp, self.file_path)
@@ -144,6 +138,7 @@ class GameStore:
         self._save()
 
     def record_session(self, game_id: str, seconds: int) -> None:
+        # Somamos o tempo novo ao total que já estava salvo.
         game = self.get(game_id)
         game["seconds_played"] = int(game.get("seconds_played", 0)) + max(0, int(seconds))
         game["last_played"] = now_iso()
@@ -153,9 +148,7 @@ class GameStore:
         return sum(max(0, int(game.get("seconds_played", 0))) for game in self.games)
 
 
-# ---- Inicializacao e acompanhamento dos jogos ----
-
-"""Abre jogos e mede sessões enquanto o GameHub estiver aberto."""
+# Acompanha os jogos iniciados aqui para contar as horas e poder fechá-los.
 
 import os
 import subprocess
@@ -170,11 +163,10 @@ def normalized_path(value: str) -> str:
 
 
 class SessionTracker:
-    """Acompanha somente os processos iniciados pelo GameHub e seus filhos.
+    """Cuida dos jogos que foram abertos pelo GameHub.
 
-    Guarda PID e instante de criacao, evitando confundir PIDs reutilizados. Nao
-    encerra outros processos com o mesmo nome/caminho nem o launcher do usuario
-    se nao for parte da sessao iniciada por este aplicativo.
+    Cada sessão guarda os processos ligados ao jogo. Isso evita fechar,
+    por engano, outro programa que tenha o mesmo nome.
     """
 
     def __init__(self):
@@ -186,12 +178,14 @@ class SessionTracker:
         executable = str(Path(executable).resolve())
         if not Path(executable).is_file():
             raise FileNotFoundError(f"Executável não encontrado:\n{executable}")
+        # Abre o jogo na própria pasta dele. Alguns jogos precisam disso
+        # para encontrar arquivos que ficam junto do executável.
         process = subprocess.Popen([executable], cwd=str(Path(executable).parent))
         started = time.monotonic()
         try:
             created = psutil.Process(process.pid).create_time()
         except psutil.Error:
-            # O processo pode ter fechado imediatamente (launchers, por exemplo).
+            # Alguns launchers fecham o processo inicial logo após abrir o jogo.
             created = None
         self.sessions[game_id] = {
             "process": process,
@@ -208,16 +202,16 @@ class SessionTracker:
         return max(0, int(time.monotonic() - session["start"]))
 
     def _live_owned(self, session: dict) -> list[psutil.Process]:
-        """Identifica processos da sessao, com verificacao contra reutilizacao de PID.
+        """Confere quais processos desta sessão ainda estão abertos.
 
-        Apenas descendentes de processos identificados sao adicionados. Evita
-        encerrar instancias preexistentes do mesmo jogo ou apps nao relacionados.
+        O horário de criação é importante porque o Windows pode reutilizar
+        o número de um processo depois que ele termina.
         """
         live: dict[int, psutil.Process] = {}
         for pid, created in list(session["owned"].items()):
             if created is None:
-                # Se o processo comecou rapido demais para a primeira leitura,
-                # registrar a identidade enquanto o Popen original estiver vivo.
+                # Se o jogo abriu muito rápido, tentamos descobrir seu horário
+                # de criação enquanto o processo original ainda existe.
                 if pid != session["process"].pid or session["process"].poll() is not None:
                     continue
                 try:
@@ -232,7 +226,8 @@ class SessionTracker:
                     live[pid] = candidate
             except (psutil.Error, OSError):
                 continue
-        # Descobre processos filhos a cada consulta, enquanto os pais estao vivos.
+        # Alguns jogos abrem outros processos. Guardamos esses filhos também,
+        # mas só quando conseguimos ligá-los a esta sessão.
         pending = list(live.values())
         while pending:
             parent = pending.pop()
@@ -258,13 +253,13 @@ class SessionTracker:
         return list(live.values())
 
     def refresh_game(self, game_id: str) -> None:
-        """Atualiza a arvore de processos sem encerrar nada."""
+        """Procura novos processos do jogo sem interferir na execução."""
         session = self.sessions.get(game_id)
         if session:
             self._live_owned(session)
 
     def poll(self) -> list[tuple[str, int]]:
-        """Retorna sessoes finalizadas como (id, segundos)."""
+        """Verifica quais jogos fecharam e quanto tempo ficaram abertos."""
         now = time.monotonic()
         ended = []
         for game_id, session in list(self.sessions.items()):
@@ -273,24 +268,24 @@ class SessionTracker:
                 running = True
             if running:
                 session["last_seen"] = now
+            # Espera alguns segundos antes de considerar a sessão encerrada.
+            # Isso ajuda nos jogos que trocam de processo durante a abertura.
             elif now - session["last_seen"] >= 3:
                 ended.append((game_id, max(0, int(now - session["start"]))))
                 del self.sessions[game_id]
         return ended
 
     def stop(self, game_id: str) -> int | None:
-        """Encerra SOMENTE os processos pertencentes ao jogo iniciado pelo Hub.
+        """Tenta fechar os processos ligados ao jogo que o Hub abriu.
 
-        Retorna segundos decorridos quando encerrado, ou None quando ainda ha
-        processos ativos. Em Windows psutil.terminate() pode finalizar o jogo de
-        modo imediato, por isso a interface pede confirmacao antes de chamar.
+        Se algum deles continuar rodando, a interface avisa o usuário.
         """
         session = self.sessions.get(game_id)
         if session is None:
             raise RuntimeError("O jogo já não está em execução pelo GameHub.")
         processes = self._live_owned(session)
         failures = []
-        # Filhos primeiro, processo principal por ultimo.
+        # Fechamos os processos filhos antes do principal.
         ordered = sorted(processes, key=lambda proc: proc.pid == session["process"].pid)
         for proc in ordered:
             try:
@@ -301,7 +296,7 @@ class SessionTracker:
                 failures.append(f"PID {proc.pid}: {exc}")
         if failures:
             raise RuntimeError("Não foi possível encerrar todos os processos:\n" + "\n".join(failures))
-        # wait_procs permite que os processos finalizem sem bloquear a UI por muito tempo.
+        # Dá um pequeno tempo para o encerramento, sem travar a janela.
         if processes:
             psutil.wait_procs(processes, timeout=0.8)
         if self._live_owned(session) or session["process"].poll() is None:
@@ -311,24 +306,19 @@ class SessionTracker:
         return seconds
 
     def finish_all(self) -> list[tuple[str, int]]:
-        """Salva ate o fechamento do GameHub (nao encerra nenhum jogo)."""
+        """Calcula as sessões em andamento ao sair, sem fechar os jogos."""
         ended = [(game_id, self.elapsed(game_id)) for game_id in list(self.sessions)]
         self.sessions.clear()
         return ended
 
 
-# ---- Interface do GameHub ----
-
-"""GameHub: biblioteca e gerenciador de jogos para Windows.
-
-Inicie com: GameHub.pyw ou GameHub.exe
-"""
+# A partir daqui ficam as janelas, os botões e a biblioteca visual.
 
 import os
 import sys
 
 
-# Precisa acontecer antes da primeira janela Tk (corrige texto borrado).
+# Esse ajuste precisa acontecer antes de criar qualquer janela do Tkinter.
 enable_high_dpi()
 
 import tkinter as tk
@@ -345,7 +335,7 @@ except ImportError as exc:
     raise SystemExit(1) from exc
 
 
-# Paleta do tema escuro
+# Cores usadas na interface. Assim fica fácil mudar o tema depois.
 BG = "#0C101A"
 SIDE = "#101624"
 PANEL = "#171E2E"
@@ -391,8 +381,8 @@ class GameHubApp(tk.Tk):
         super().__init__()
         self.title("GameHub — Minha biblioteca")
         self._scale = ui_scale(self)
-        # Tk define a unidade tipografica a partir da densidade fisica do monitor.
-        # Nao escalamos fontes manualmente para evitar tamanho duplicado.
+        # O Tkinter já ajusta as fontes conforme a tela. Aqui escalamos
+        # os demais elementos para não deixar tudo pequeno ou borrado.
         if sys.platform == "win32" or os.environ.get("GAMEHUB_UI_SCALE"):
             self.tk.call("tk", "scaling", (96.0 * self._scale) / 72.0)
         screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
@@ -402,7 +392,8 @@ class GameHubApp(tk.Tk):
         self.geometry(f"{width}x{height}")
         self.minsize(min(self.px(870), width), min(self.px(580), height))
         self.configure(bg=BG)
-        # O mesmo icone funciona no modo codigo-fonte e no EXE do PyInstaller.
+        # No executável, o PyInstaller deixa o ícone na pasta de recursos.
+        # Ao abrir pelo Python, usamos o ícone que está junto do código.
         resource_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
         icon_path = resource_dir / "GameHub.ico"
         if icon_path.exists():
@@ -441,8 +432,8 @@ class GameHubApp(tk.Tk):
         self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
 
         self._build_layout()
-        # Modo de tela cheia real ao iniciar; F11 alterna e Esc retorna
-        # para janela maximizada. Um botao visivel permite sair sem bordas.
+        # O Hub já abre em tela cheia. F11 alterna o modo e Esc volta
+        # para uma janela maximizada.
         self.bind("<F11>", self._toggle_fullscreen)
         self.bind("<Escape>", self._exit_fullscreen)
         self.after(100, self._enter_fullscreen)
@@ -454,16 +445,15 @@ class GameHubApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _enter_fullscreen(self):
-        """Ocupa a tela toda, sem bordas e sem barra de tarefas."""
+        """Abre o GameHub ocupando a tela inteira."""
         try:
             self.attributes("-fullscreen", True)
         except tk.TclError:
-            # Caso o gerenciador de janelas nao ofereca fullscreen,
-            # abrir maximizado e um fallback sem perda de funcionalidades.
+            # Se a tela cheia falhar, pelo menos mantemos a janela maximizada.
             self._maximize()
 
     def _maximize(self):
-        """Restaura a janela maximizada quando sai do fullscreen."""
+        """Volta para a janela maximizada ao sair da tela cheia."""
         try:
             if sys.platform == "win32":
                 self.state("zoomed")
@@ -485,7 +475,7 @@ class GameHubApp(tk.Tk):
             self.after_idle(self._maximize)
 
     def px(self, value):
-        """Converte dimensoes de interface para pixels fisicos do monitor."""
+        """Ajusta tamanhos e espaçamentos à escala da tela."""
         return max(1, round(value * self._scale)) if value else 0
 
     def _button(self, parent, text, command, bg=ACCENT, fg=TEXT, hover=ACCENT_HOVER, **kwargs):
@@ -622,6 +612,7 @@ class GameHubApp(tk.Tk):
 
     def _on_canvas_resize(self, event):
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
+        # A quantidade de cartões por linha muda conforme o espaço disponível.
         new_cols = (3 if event.width >= self.px(1020)
                     else 2 if event.width >= self.px(720) else 1)
         if new_cols != self._cols:
@@ -650,12 +641,13 @@ class GameHubApp(tk.Tk):
             if not cover_path or not Path(cover_path).is_file():
                 raise FileNotFoundError
             with Image.open(cover_path) as source:
-                # Gera as capas na resolucao fisica do monitor, sem ampliar
-                # posteriormente uma miniatura de 120x164 pela API do Windows.
+                # Redimensiona a capa já no tamanho certo para ela não ficar
+                # borrada quando o Windows usa escala maior que 100%.
                 image = ImageOps.fit(source.convert("RGB"), (cover_w, cover_h),
                                      method=Image.Resampling.LANCZOS)
         except (OSError, ValueError):
-            # Placeholder vetorial rasterizado em dobro para bordas suaves.
+            # Se não tiver capa, mostramos um desenho simples no lugar.
+            # Ele é feito maior e reduzido depois para não ficar serrilhado.
             w, h = cover_w * 2, cover_h * 2
             image = Image.new("RGB", (w, h), "#29264E")
             draw = ImageDraw.Draw(image)
@@ -675,6 +667,7 @@ class GameHubApp(tk.Tk):
             draw.line([pt(45, 82), pt(59, 82)], fill="#E3DDFF", width=max(2, round(3 * sx)))
             image = image.resize((cover_w, cover_h), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(image, master=self)
+        # Sem guardar a referência, o Tkinter pode deixar a imagem sumir.
         self._image_refs.append(photo)
         return tk.Label(parent, image=photo, bd=0, bg=PANEL)
 
@@ -690,6 +683,7 @@ class GameHubApp(tk.Tk):
         for index in range(self._cols):
             self.cards_container.grid_columnconfigure(index, weight=1, uniform="cards")
 
+        # Busca pelo nome e filtra pela categoria selecionada.
         needle = self.search_var.get().strip().casefold()
         category = self.category_var.get()
         games = sorted(self.store.games, key=lambda g: g.get("name", "").casefold())
@@ -752,6 +746,7 @@ class GameHubApp(tk.Tk):
 
         actions = tk.Frame(body, bg=PANEL)
         actions.pack(side="bottom", fill="x", pady=(self.px(9), 0))
+        # O botão muda enquanto o jogo estiver em execução.
         if running:
             self._button(actions, "■  Fechar jogo",
                          lambda game_id=game["id"]: self.stop_game(game_id),
@@ -782,6 +777,7 @@ class GameHubApp(tk.Tk):
                                       fg=GREEN if count else MUTED)
 
     def _tick(self):
+        # A cada dois segundos atualizamos o uso do PC e o tempo das sessões.
         try:
             ended = self.tracker.poll()
             for game_id, seconds in ended:
@@ -815,12 +811,13 @@ class GameHubApp(tk.Tk):
             messagebox.showerror("Não foi possível iniciar o jogo", str(exc), parent=self)
             return
         self.render_games()
-        # Descobre processos que tenham sido abertos logo depois do processo inicial.
+        # Alguns jogos só iniciam o processo principal depois de alguns instantes.
+        # Fazemos mais duas verificações para tentar acompanhá-lo.
         self.after(400, lambda gid=game_id: self.tracker.refresh_game(gid))
         self.after(1200, lambda gid=game_id: self.tracker.refresh_game(gid))
 
     def stop_game(self, game_id):
-        """Pede confirmacao antes de encerrar o jogo pelo GameHub."""
+        """Confirma com o usuário antes de forçar o fechamento do jogo."""
         try:
             game = self.store.get(game_id)
         except KeyError:
@@ -833,6 +830,7 @@ class GameHubApp(tk.Tk):
             icon="warning", parent=self,
         ):
             return
+        # O encerramento pode fazer o jogador perder uma partida não salva.
         try:
             seconds = self.tracker.stop(game_id)
             if seconds is None:
@@ -857,6 +855,7 @@ class GameHubApp(tk.Tk):
             messagebox.showinfo("Jogo em execução", "Feche o jogo antes de removê-lo.", parent=self)
             return
         game = self.store.get(game_id)
+        # Tirar da biblioteca não apaga nenhum arquivo da instalação do jogo.
         if not messagebox.askyesno("Remover jogo", f"Remover '{game['name']}' da biblioteca?\n\n"
                                    "Isso não desinstala nem exclui o jogo do computador.", parent=self):
             return
@@ -891,8 +890,8 @@ class GameHubApp(tk.Tk):
         y = self.winfo_rooty() + max(self.px(20), (self.winfo_height() - form_height) // 2)
         modal.geometry(f"+{x}+{y}")
 
-        # Em notebooks com resolucao menor e escala de 150% ou 200%,
-        # o formulario rola verticalmente em vez de cortar os campos.
+        # Em telas menores, o formulário pode ser rolado em vez de cortar
+        # os campos que ficam mais para baixo.
         form_canvas = tk.Canvas(modal, bg=BG, highlightthickness=0, bd=0)
         form_canvas.pack(side="left", fill="both", expand=True)
         form_scroll = ttk.Scrollbar(modal, orient="vertical", command=form_canvas.yview,
@@ -974,6 +973,7 @@ class GameHubApp(tk.Tk):
             if cover and (not Path(cover).is_file() or Path(cover).suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp")):
                 messagebox.showwarning("Capa inválida", "Selecione uma imagem PNG, JPG ou WEBP existente.", parent=modal)
                 return
+            # Evita cadastrar duas vezes o mesmo executável.
             normalized = os.path.normcase(os.path.abspath(exe))
             for other in self.store.games:
                 if other["id"] != game_id and os.path.normcase(os.path.abspath(other["executable"])) == normalized:
@@ -995,6 +995,8 @@ class GameHubApp(tk.Tk):
                      hover=BORDER).pack(side="right", padx=(0, self.px(10)))
 
     def _on_close(self):
+        # O Hub fecha, mas os jogos continuam abertos. Antes disso,
+        # guardamos o tempo que foi contado até aqui.
         try:
             for game_id, seconds in self.tracker.finish_all():
                 self.store.record_session(game_id, seconds)
@@ -1002,10 +1004,10 @@ class GameHubApp(tk.Tk):
             messagebox.showerror("Erro ao salvar sessões", str(exc), parent=self)
         self.destroy()
 
-# ---- Tratamento de erros e inicializacao sem console ----
+# Como o executável não abre CMD, usamos uma mensagem do Windows se algo falhar.
 
 def show_error(message: str) -> None:
-    """Sem console, erros de inicializacao ainda precisam ficar visiveis."""
+    """Mostra o erro em uma janela quando não existe console aberto."""
     import ctypes
     import sys
 
@@ -1019,7 +1021,6 @@ def show_error(message: str) -> None:
 
 
 def main():
-    # O app chama enable_high_dpi() antes de importar tkinter.
     GameHubApp().mainloop()
 
 
@@ -1027,6 +1028,7 @@ if __name__ == "__main__":
     try:
         main()
     except (Exception, SystemExit):
+        # Guarda o erro num arquivo para facilitar quando o programa não abrir.
         error = traceback.format_exc()
         try:
             if os.name == "nt":
