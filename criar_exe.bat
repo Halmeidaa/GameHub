@@ -2,10 +2,10 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 set "APP_DIR=%CD%"
-title GameHub v2.0.0 - Criar executavel
+title GameHub v1.2 - Criar executavel
 
 echo ===========================================
-echo   GAMEHUB v2.0.0 - GERAR EXECUTAVEL
+echo   GAMEHUB v1.2 - GERAR EXECUTAVEL
 echo ===========================================
 echo.
 echo Pasta do projeto: "%APP_DIR%"
@@ -22,6 +22,13 @@ if not exist "%APP_DIR%\GameHub.ico" (
 if not exist "%APP_DIR%\requirements.txt" (
   echo ERRO: requirements.txt nao encontrado nesta pasta.
   goto :erro
+)
+
+rem Evita compilar enquanto o executavel antigo ainda esta em uso.
+tasklist /FI "IMAGENAME eq GameHub.exe" 2>nul | find /I "GameHub.exe" >nul
+if not errorlevel 1 (
+    echo ERRO: Feche o GameHub.exe antes de gerar uma nova versao.
+    goto :erro
 )
 
 where py >nul 2>nul
