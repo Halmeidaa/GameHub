@@ -836,7 +836,7 @@ def icon_cover(icon, width: int, height: int):
 class GameHubApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("GameHub v1.2 — Biblioteca")
+        self.title("GameHub v1.2.1 — Biblioteca")
         self._scale = ui_scale(self)
         # O Tkinter já ajusta as fontes conforme a tela. Aqui escalamos
         # os demais elementos para não deixar tudo pequeno ou borrado.
@@ -1025,12 +1025,13 @@ class GameHubApp(tk.Tk):
         bottom = tk.Frame(sidebar, bg=SIDE)
         bottom.pack(side="bottom", fill="x", padx=self.px(22), pady=self.px(24))
         self._button(bottom, "✕   Sair do GameHub", self._on_close,
-                     bg=SIDE, hover=PANEL_HOVER, anchor="w").pack(fill="x", pady=(0, self.px(13)))
+                     bg=SIDE, hover=PANEL_HOVER, anchor="w", font=font(9, "bold"),
+                     padx=self.px(14), pady=self.px(8)).pack(fill="x", pady=(0, self.px(13)))
         tk.Frame(bottom, bg=BORDER, height=self.px(1)).pack(fill="x", pady=(0, self.px(16)))
         self.sidebar_status = tk.Label(bottom, text="●  Nenhum jogo aberto", bg=SIDE,
                                        fg=MUTED, font=font(9), anchor="w")
         self.sidebar_status.pack(anchor="w")
-        tk.Label(bottom, text="GameHub v1.2", bg=SIDE, fg="#74788E",
+        tk.Label(bottom, text="GameHub v1.2.1", bg=SIDE, fg="#74788E",
                  font=font(9, "bold")).pack(anchor="w", pady=(self.px(12), 0))
         tk.Label(bottom, text="Criador:\nGuilherme Fagundes\nde Almeida", bg=SIDE,
                  fg="#8F9BAE", font=font(8), justify="left").pack(anchor="w", pady=(self.px(4), 0))
