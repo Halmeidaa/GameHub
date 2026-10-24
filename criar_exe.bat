@@ -2,10 +2,10 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 set "APP_DIR=%CD%"
-title GameHub v1.4.0 - Criar executavel
+title GameHub v1.7.0 - Criar executavel
 
 echo ===========================================
-echo   GAMEHUB v1.4.0 - GERAR EXECUTAVEL
+echo   GAMEHUB v1.7.0 - GERAR EXECUTAVEL
 echo ===========================================
 echo.
 echo Pasta do projeto: "%APP_DIR%"
@@ -40,7 +40,7 @@ echo Instalando bibliotecas, se necessario...
 %PY% -m pip install -r "%APP_DIR%\requirements.txt" pyinstaller
 if errorlevel 1 goto :erro
 
-rem Salva a pasta temporaria somente para os arquivos de compilacao.
+rem Usa uma pasta temporaria para nao encher a pasta do GameHub.
 set "TEMP_BUILD=%TEMP%\GameHub_Build_%RANDOM%_%RANDOM%"
 mkdir "%TEMP_BUILD%" >nul 2>nul
 if errorlevel 1 goto :erro
@@ -50,13 +50,12 @@ echo Verificacao: icone encontrado em "%APP_DIR%\GameHub.ico"
 echo Criando GameHub.exe na mesma pasta do BAT...
 echo.
 
-rem O arquivo .spec fica TEMPORARIAMENTE na pasta do projeto.
-rem Assim os recursos tambem sao resolvidos a partir da pasta do icone.
-rem Caminhos absolutos protegem mesmo se houver espacos no nome da pasta.
+rem O .spec fica ao lado do icone durante a compilacao e e apagado no final.
+rem Os caminhos completos evitam problemas com nomes de pasta que tenham espacos.
 %PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name GameHub --icon "%APP_DIR%\GameHub.ico" --add-data "%APP_DIR%\GameHub.ico;." --distpath "%APP_DIR%" --workpath "%TEMP_BUILD%" --specpath "%APP_DIR%" "%APP_DIR%\GameHub.pyw"
 set "RESULT=%ERRORLEVEL%"
 
-rem Nao deixar pasta build, dist nem arquivo .spec na pasta do projeto.
+rem Apaga o .spec e os arquivos temporarios quando terminar.
 if exist "%APP_DIR%\GameHub.spec" del /f /q "%APP_DIR%\GameHub.spec" >nul 2>nul
 if exist "%TEMP_BUILD%" rmdir /s /q "%TEMP_BUILD%" >nul 2>nul
 

@@ -97,6 +97,9 @@ class GameStore:
             raise RuntimeError(f"Não foi possível ler o arquivo de jogos:\n{self.file_path}\n\n{exc}") from exc
         if not isinstance(data, list) or not all(isinstance(game, dict) for game in data):
             raise RuntimeError(f"O arquivo de jogos tem formato inválido:\n{self.file_path}")
+        # Cadastros antigos continuam funcionando normalmente.
+        for game in data:
+            game.pop("run_as_admin", None)
         return data
 
     def _save(self) -> None:
@@ -162,6 +165,102 @@ def normalized_path(value: str) -> str:
     return os.path.normcase(os.path.abspath(value))
 
 
+class WindowsGameProcess:
+    """Guarda o identificador do processo aberto pelo Windows.
+
+    Ele permite acompanhar um jogo que pediu UAC sem precisar executar
+    o GameHub inteiro como administrador.
+    """
+
+    def __init__(self, handle: int):
+        from ctypes import wintypes
+        self._kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel.GetProcessId.argtypes = [wintypes.HANDLE]
+        self._kernel.GetProcessId.restype = wintypes.DWORD
+        self._kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self._kernel.WaitForSingleObject.restype = wintypes.DWORD
+        self._kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._kernel.CloseHandle.restype = wintypes.BOOL
+        self._handle = handle
+        self.pid = self._kernel.GetProcessId(wintypes.HANDLE(handle))
+        if not self.pid:
+            code = ctypes.get_last_error()
+            self.close()
+            raise ctypes.WinError(code)
+
+    def poll(self):
+        if not self._handle:
+            return 0
+        # Não trava a interface: apenas consulta se o jogo ainda está aberto.
+        result = self._kernel.WaitForSingleObject(ctypes.c_void_p(self._handle), 0)
+        if result == 0x102:  # WAIT_TIMEOUT
+            return None
+        if result == 0:  # WAIT_OBJECT_0
+            return 0
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self):
+        # Soltar o identificador não fecha o jogo, só libera o recurso do Windows.
+        if self._handle:
+            self._kernel.CloseHandle(ctypes.c_void_p(self._handle))
+            self._handle = None
+
+
+def open_windows_game(executable: str) -> WindowsGameProcess:
+    """O Windows solicita autorização quando o jogo precisar dela."""
+    from ctypes import wintypes
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", wintypes.ULONG),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIcon", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    shell.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+    shell.ShellExecuteExW.restype = wintypes.BOOL
+
+    def execute(verb):
+        options = SHELLEXECUTEINFOW()
+        options.cbSize = ctypes.sizeof(options)
+        options.fMask = 0x00000040  # Guarda o processo para acompanhar o tempo jogado.
+        options.lpVerb = verb
+        options.lpFile = executable
+        options.lpDirectory = str(Path(executable).parent)
+        options.nShow = 1
+        if not shell.ShellExecuteExW(ctypes.byref(options)):
+            return None, ctypes.get_last_error()
+        return options.hProcess, 0
+
+    # Normalmente o Windows já reconhece executáveis que precisam de UAC.
+    handle, error = execute("open")
+    if error == 740:
+        # Se ele exigir elevação de forma explícita, solicitamos ao usuário.
+        handle, error = execute("runas")
+    if error == 1223:
+        raise RuntimeError("A autorização do Windows foi cancelada. O jogo não foi aberto.")
+    if error in (5, 740):
+        raise RuntimeError("O Windows não permitiu abrir este jogo. Confira as permissões do executável.")
+    if error:
+        raise ctypes.WinError(error)
+    if not handle:
+        raise RuntimeError("O Windows abriu o executável, mas não foi possível acompanhar o jogo.")
+    return WindowsGameProcess(handle)
+
+
 class SessionTracker:
     """Cuida dos jogos que foram abertos pelo GameHub.
 
@@ -180,7 +279,12 @@ class SessionTracker:
             raise FileNotFoundError(f"Executável não encontrado:\n{executable}")
         # Abre o jogo na própria pasta dele. Alguns jogos precisam disso
         # para encontrar arquivos que ficam junto do executável.
-        process = subprocess.Popen([executable], cwd=str(Path(executable).parent))
+        # No Windows, o ShellExecuteEx também abre jogos que pedem autorização.
+        # Em outros sistemas, continuamos usando o processo comum.
+        if sys.platform == "win32":
+            process = open_windows_game(executable)
+        else:
+            process = subprocess.Popen([executable], cwd=str(Path(executable).parent))
         started = time.monotonic()
         try:
             created = psutil.Process(process.pid).create_time()
@@ -192,6 +296,7 @@ class SessionTracker:
             "start": started,
             "last_seen": started,
             "owned": {process.pid: created},
+            "had_children": False,
         }
         self.refresh_game(game_id)
 
@@ -246,6 +351,7 @@ class SessionTracker:
                     if original is not None and abs(original - born) > 0.1:
                         continue
                     session["owned"][child.pid] = born
+                    session["had_children"] = True
                     live[child.pid] = child
                     pending.append(child)
                 except (psutil.Error, OSError):
@@ -273,41 +379,83 @@ class SessionTracker:
             elif now - session["last_seen"] >= 3:
                 ended.append((game_id, max(0, int(now - session["start"]))))
                 del self.sessions[game_id]
+                self._close_process_handle(session)
         return ended
 
     def stop(self, game_id: str) -> int | None:
-        """Tenta fechar os processos ligados ao jogo que o Hub abriu.
+        """Pede o encerramento e aguarda a confirmação do Windows.
 
-        Se algum deles continuar rodando, a interface avisa o usuário.
+        Um processo pode recusar o comando e fechar por conta própria logo
+        depois. Por isso, um erro de permissão aqui não significa que o jogo
+        continuou aberto.
         """
         session = self.sessions.get(game_id)
         if session is None:
             raise RuntimeError("O jogo já não está em execução pelo GameHub.")
+
         processes = self._live_owned(session)
-        failures = []
-        # Fechamos os processos filhos antes do principal.
+        # Fecha os processos filhos antes do principal.
         ordered = sorted(processes, key=lambda proc: proc.pid == session["process"].pid)
         for proc in ordered:
             try:
                 proc.terminate()
-            except psutil.NoSuchProcess:
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                # Só mostraremos um erro se o jogo realmente continuar aberto.
                 pass
-            except (psutil.AccessDenied, OSError) as exc:
-                failures.append(f"PID {proc.pid}: {exc}")
-        if failures:
-            raise RuntimeError("Não foi possível encerrar todos os processos:\n" + "\n".join(failures))
-        # Dá um pequeno tempo para o encerramento, sem travar a janela.
-        if processes:
-            psutil.wait_procs(processes, timeout=0.8)
+
+        # Não bloqueia a interface esperando o jogo fechar. A janela vai
+        # conferir novamente em intervalos curtos.
+        return self.finish_if_closed(game_id)
+
+    def finish_if_closed(self, game_id: str) -> int | None:
+        """Termina a sessão se não houver mais processos em execução."""
+        session = self.sessions.get(game_id)
+        if session is None:
+            return None
         if self._live_owned(session) or session["process"].poll() is None:
             return None
         seconds = self.elapsed(game_id)
         del self.sessions[game_id]
+        self._close_process_handle(session)
         return seconds
+
+    def closing_status(self, game_id: str) -> str:
+        """Diz se o jogo fechou, ainda está aberto ou não dá para confirmar.
+
+        Não usamos a presença de um launcher ou de um processo auxiliar como
+        prova de que o jogo em si continua rodando.
+        """
+        session = self.sessions.get(game_id)
+        if not session:
+            return "closed"
+        try:
+            active = self._live_owned(session)
+            main_active = session["process"].poll() is None
+        except (OSError, psutil.Error):
+            return "unknown"
+        if not active and not main_active:
+            return "closed"
+        # Se o launcher criou outro processo e só ele ficou aberto, não há
+        # confirmação de que o jogo continue rodando.
+        if session.get("had_children") and not any(
+            proc.pid != session["process"].pid for proc in active
+        ):
+            return "unknown"
+        if active or main_active:
+            return "running"
+        return "unknown"
+
+    @staticmethod
+    def _close_process_handle(session: dict) -> None:
+        process = session["process"]
+        if isinstance(process, WindowsGameProcess):
+            process.close()
 
     def finish_all(self) -> list[tuple[str, int]]:
         """Calcula as sessões em andamento ao sair, sem fechar os jogos."""
         ended = [(game_id, self.elapsed(game_id)) for game_id in list(self.sessions)]
+        for session in self.sessions.values():
+            self._close_process_handle(session)
         self.sessions.clear()
         return ended
 
@@ -410,6 +558,7 @@ class GameHubApp(tk.Tk):
             raise SystemExit(1) from exc
 
         self.tracker = SessionTracker()
+        self._closing_games = set()
         self.search_var = tk.StringVar()
         self.category_var = tk.StringVar(value="Todas as categorias")
         self._image_refs = []
@@ -522,7 +671,7 @@ class GameHubApp(tk.Tk):
         self.sidebar_status = tk.Label(bottom, text="●  Nenhum jogo aberto", bg=SIDE,
                                        fg=MUTED, font=font(10))
         self.sidebar_status.pack(anchor="w")
-        tk.Label(bottom, text="GameHub v1.4  ·  Windows", bg=SIDE, fg="#6C7892",
+        tk.Label(bottom, text="GameHub v1.7  ·  Windows", bg=SIDE, fg="#6C7892",
                  font=font(9)).pack(anchor="w", pady=(self.px(11), 0))
 
         main = tk.Frame(self, bg=BG)
@@ -739,8 +888,10 @@ class GameHubApp(tk.Tk):
         time_label = tk.Label(body, bg=PANEL, fg=GREEN if running else MUTED,
                               text=self._time_text(game), font=font(10), anchor="w")
         time_label.pack(anchor="w")
+        closing = game["id"] in self._closing_games
         status = tk.Label(body, bg=PANEL, fg=GREEN if running else "#76849C",
-                          text="● Em execução" if running else friendly_date(game.get("last_played")),
+                          text=("● Encerrando..." if closing else "● Em execução" if running
+                                else friendly_date(game.get("last_played"))),
                           font=font(9), anchor="w")
         status.pack(anchor="w", pady=(self.px(3), 0))
 
@@ -748,10 +899,13 @@ class GameHubApp(tk.Tk):
         actions.pack(side="bottom", fill="x", pady=(self.px(9), 0))
         # O botão muda enquanto o jogo estiver em execução.
         if running:
-            self._button(actions, "■  Fechar jogo",
-                         lambda game_id=game["id"]: self.stop_game(game_id),
-                         bg="#7D3445", hover="#A2465B",
-                         font=font(9, "bold")).pack(side="left")
+            btn = self._button(actions, "Encerrando..." if closing else "■  Fechar jogo",
+                               lambda game_id=game["id"]: self.stop_game(game_id),
+                               bg="#7D3445", hover="#A2465B",
+                               font=font(9, "bold"))
+            if closing:
+                btn.configure(state="disabled", cursor="arrow")
+            btn.pack(side="left")
         else:
             self._button(actions, "▶  Jogar",
                          lambda game_id=game["id"]: self.launch_game(game_id),
@@ -782,6 +936,7 @@ class GameHubApp(tk.Tk):
             ended = self.tracker.poll()
             for game_id, seconds in ended:
                 self.store.record_session(game_id, seconds)
+                self._closing_games.discard(game_id)
             if ended:
                 self.render_games()
 
@@ -817,38 +972,71 @@ class GameHubApp(tk.Tk):
         self.after(1200, lambda gid=game_id: self.tracker.refresh_game(gid))
 
     def stop_game(self, game_id):
-        """Confirma com o usuário antes de forçar o fechamento do jogo."""
+        """Confirma antes de fechar, para não perder uma partida sem querer."""
+        if game_id in self._closing_games:
+            return
         try:
             game = self.store.get(game_id)
         except KeyError:
             return
         if not messagebox.askyesno(
             "Fechar jogo",
-            f"Deseja realmente fechar '{game['name']}'?\n\n"
-            "O jogo pode ser encerrado imediatamente, sem salvar seu progresso.\n"
-            "Salve sua partida antes de continuar.",
+            f"Fechar '{game['name']}' agora?\n\n"
+            "Se houver progresso não salvo, ele poderá ser perdido.",
             icon="warning", parent=self,
         ):
             return
-        # O encerramento pode fazer o jogador perder uma partida não salva.
         try:
             seconds = self.tracker.stop(game_id)
             if seconds is None:
-                messagebox.showinfo(
-                    "Encerramento em andamento",
-                    "O GameHub solicitou o encerramento, mas ainda há um processo ativo. "
-                    "Confira se o jogo foi fechado.", parent=self,
-                )
+                # Alguns jogos demoram para terminar. Acompanhamos sem exibir
+                # mensagens enquanto o encerramento está acontecendo.
+                self._closing_games.add(game_id)
+                self.render_games()
+                self.after(900, lambda gid=game_id: self._check_game_closed(gid, 0))
             else:
                 self.store.record_session(game_id, seconds)
-            self.render_games()
-        except (RuntimeError, OSError, psutil.Error) as exc:
-            messagebox.showerror(
-                "Não foi possível fechar o jogo",
-                f"{exc}\n\nO GameHub só encerra processos iniciados por ele e seus filhos. "
-                "Jogos abertos por launchers externos podem precisar ser fechados manualmente.",
+                self.render_games()
+        except (RuntimeError, OSError, psutil.Error):
+            # Não conclui que falhou antes de conferir se o processo terminou.
+            if game_id in self.tracker.sessions:
+                self._closing_games.add(game_id)
+                self.render_games()
+                self.after(900, lambda gid=game_id: self._check_game_closed(gid, 0))
+
+    def _check_game_closed(self, game_id, attempts):
+        if game_id not in self._closing_games:
+            return
+        try:
+            ended = self.tracker.poll()
+            for ended_id, seconds in ended:
+                self.store.record_session(ended_id, seconds)
+                self._closing_games.discard(ended_id)
+            if game_id not in self.tracker.sessions:
+                # O fechamento foi confirmado: volta ao botão Jogar sem aviso.
+                self._closing_games.discard(game_id)
+                self.render_games()
+                return
+        except (OSError, RuntimeError, psutil.Error):
+            # Uma falha de leitura isolada não significa que o jogo ficou aberto.
+            # Tentamos novamente antes de decidir se é necessário avisar.
+            pass
+
+        if attempts < 13:
+            self.after(900, lambda gid=game_id, n=attempts + 1: self._check_game_closed(gid, n))
+            return
+
+        status = self.tracker.closing_status(game_id)
+        self._closing_games.discard(game_id)
+        self.render_games()
+        if status == "running":
+            messagebox.showwarning(
+                "O jogo continua aberto",
+                "O jogo ainda está em execução. Tente fechá-lo pela própria janela.",
                 parent=self,
             )
+        # Se não foi possível confirmar, não exibimos um erro que pode ser falso.
+        # O acompanhamento normal continua até o processo realmente terminar.
 
     def delete_game(self, game_id):
         if game_id in self.tracker.sessions:
