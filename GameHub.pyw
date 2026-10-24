@@ -1239,7 +1239,35 @@ class GameHubApp(tk.Tk):
         normal_photo = make_menu_image(False)
         hovered_photo = make_menu_image(True)
         self._image_refs.extend((normal_photo, hovered_photo))
-        label = tk.Label(parent, image=normal_photo, bd=0, bg=PANEL)
+
+        # A capa e as etiquetas ficam no mesmo Canvas. Assim, trocar a imagem
+        # no hover não faz o gênero desaparecer atrás da capa.
+        cover = tk.Canvas(parent, width=cover_w, height=cover_h, bg=PANEL,
+                          highlightthickness=0, bd=0, relief="flat")
+        image_id = cover.create_image(0, 0, anchor="nw", image=normal_photo)
+
+        def add_badge(text, x, y, background, foreground, right=False, bottom=False):
+            label_font = font(7, "bold")
+            measure = tkfont.Font(family="Segoe UI", size=7, weight="bold")
+            pad_x, pad_y = self.px(6), self.px(3)
+            badge_w = measure.measure(text) + 2 * pad_x
+            badge_h = measure.metrics("linespace") + 2 * pad_y
+            if right:
+                x -= badge_w
+            if bottom:
+                y -= badge_h
+            cover.create_rectangle(x, y, x + badge_w, y + badge_h,
+                                   fill=background, outline="", tags="cover_badge")
+            cover.create_text(x + pad_x, y + badge_h // 2, text=text,
+                              fill=foreground, font=label_font, anchor="w",
+                              tags="cover_badge")
+
+        add_badge((game.get("category") or "Outros").upper(),
+                  self.px(8), self.px(8), "#131924", "#E0D9FF")
+        if game["id"] in self.tracker.sessions:
+            add_badge("● JOGANDO", cover_w - self.px(7), cover_h - self.px(7),
+                      "#143B35", GREEN, right=True, bottom=True)
+
         hover_state = {"active": False}
 
         def inside_menu(event):
@@ -1250,22 +1278,25 @@ class GameHubApp(tk.Tk):
             active = inside_menu(event)
             if hover_state["active"] != active:
                 hover_state["active"] = active
-                label.configure(image=hovered_photo if active else normal_photo)
-                label.configure(cursor="hand2" if active else "arrow")
+                # Atualizamos apenas a imagem de fundo. As etiquetas continuam
+                # acima dela, independentemente de onde o mouse estiver.
+                cover.itemconfigure(image_id, image=hovered_photo if active else normal_photo)
+                cover.configure(cursor="hand2" if active else "arrow")
 
         def on_leave(_event):
             hover_state["active"] = False
-            label.configure(image=normal_photo, cursor="arrow")
+            cover.itemconfigure(image_id, image=normal_photo)
+            cover.configure(cursor="arrow")
 
         def on_click(event):
             if inside_menu(event):
-                self._show_game_menu(game["id"], label, offset_x=menu_left,
+                self._show_game_menu(game["id"], cover, offset_x=menu_left,
                                      offset_y=menu_top + diameter)
 
-        label.bind("<Motion>", on_move, add="+")
-        label.bind("<Leave>", on_leave, add="+")
-        label.bind("<Button-1>", on_click, add="+")
-        return label
+        cover.bind("<Motion>", on_move, add="+")
+        cover.bind("<Leave>", on_leave, add="+")
+        cover.bind("<Button-1>", on_click, add="+")
+        return cover
 
     def render_games(self):
         if not hasattr(self, "cards_container"):
@@ -1382,15 +1413,6 @@ class GameHubApp(tk.Tk):
 
         cover = self._create_cover(game, card)
         cover.pack(fill="x")
-        category = tk.Label(cover, text=(game.get("category") or "Outros").upper(),
-                            bg="#131924", fg="#E0D9FF", font=font(7, "bold"),
-                            padx=self.px(6), pady=self.px(3))
-        category.place(x=self.px(8), y=self.px(8))
-        if running:
-            badge = tk.Label(cover, text="● JOGANDO", bg="#143B35", fg=GREEN,
-                             font=font(7, "bold"), padx=self.px(6), pady=self.px(3))
-            badge.place(relx=1, rely=1, x=-self.px(7), y=-self.px(7), anchor="se")
-
         footer = tk.Frame(card, bg=PANEL, padx=self.px(9), pady=self.px(7))
         footer.pack(fill="x")
         title_row = tk.Frame(footer, bg=PANEL)
