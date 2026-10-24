@@ -56,7 +56,7 @@ Depois de criado, o executável pode ser aberto normalmente
 ![Tela inicial do GameHub](prints/Inicio.png)
 
 ### Adicionar jogo
-![Cadastro de jogos no GameHub](prints/Adicionar%20jogo.png)
+![Cadastro de jogos no GameHub](prints/Adicionar%20Jogo.png)
 
 ### Jogo em execução
 ![Jogo em execução no GameHub](prints/Jogo%20rodando.png)
