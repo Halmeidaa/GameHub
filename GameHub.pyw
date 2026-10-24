@@ -472,7 +472,7 @@ enable_high_dpi()
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, font as tkfont
 
 try:
     import psutil
@@ -484,24 +484,177 @@ except ImportError as exc:
 
 
 # Cores usadas na interface. Assim fica fácil mudar o tema depois.
-BG = "#0E1019"
-SIDE = "#11131D"
-PANEL = "#1A1D2A"
-PANEL_HOVER = "#222638"
-INPUT = "#25293A"
-BORDER = "#303347"
-TEXT = "#F3F3F9"
-MUTED = "#A4A7BB"
-ACCENT = "#775CF2"
-ACCENT_HOVER = "#947EFF"
-GREEN = "#53D4AE"
-RED = "#F08092"
+BG = "#0C1017"
+SIDE = "#111720"
+PANEL = "#18202A"
+PANEL_HOVER = "#242F3C"
+INPUT = "#212B39"
+BORDER = "#394657"
+HOVER_BORDER = "#9A8AFF"
+ACTIVE_BG = "#2D2848"
+CARD_HOVER = "#202A36"
+CARD_SHADOW = "#080A10"
+TEXT = "#F4F7FB"
+MUTED = "#9AA4B5"
+ACCENT = "#8069FF"
+ACCENT_HOVER = "#A093FF"
+GREEN = "#4FD1A5"
+RED = "#F07C92"
 
 CATEGORIES = ["Ação", "Aventura", "RPG", "Estratégia", "Corrida", "Simulação", "Indie", "Emulador", "Outros"]
 
 
 def font(size=11, weight="normal"):
     return ("Segoe UI", size, weight)
+
+
+class ShapeButton(tk.Canvas):
+    """Botão desenhado com imagem suavizada para ficar mais limpo visualmente."""
+
+    def __init__(self, parent, text, command, *, bg, fg, hover, font_value, padx, pady,
+                 anchor="center", shape="pill", border=BORDER, hover_border=None,
+                 width=None, height=None, **kwargs):
+        self._surface = kwargs.pop("surface", parent.cget("bg") if "bg" in parent.keys() else BG)
+        super().__init__(parent, bg=self._surface, highlightthickness=0, bd=0,
+                         relief="flat", cursor="hand2")
+        self._text = text
+        self._command = command
+        self._base = bg
+        self._fill = bg
+        self._fg = fg
+        self._hover = hover
+        self._border = border
+        self._hover_border = hover_border or border
+        self._shape = shape
+        self._anchor = anchor
+        self._padx = padx
+        self._pady = pady
+        self._font = tkfont.Font(font=font_value)
+        self._disabled = False
+        self._hovered = False
+        self._photo = None
+        self._forced_width = width
+        self._forced_height = height
+        self._min_w = max(20, self._font.measure(text) + padx * 2)
+        self._min_h = max(20, self._font.metrics("linespace") + pady * 2)
+        if self._shape == "circle":
+            diameter = max(self._min_w, self._min_h, width or 0, height or 0)
+            super().configure(width=diameter, height=diameter)
+        else:
+            if width:
+                self._min_w = max(self._min_w, width)
+            if height:
+                self._min_h = max(self._min_h, height)
+            super().configure(width=self._min_w, height=self._min_h)
+
+        self.bind("<Configure>", lambda _e: self._redraw())
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+        self._redraw()
+
+    def _current_size(self):
+        w = max(self._min_w, self.winfo_width())
+        h = max(self._min_h, self.winfo_height())
+        if self._shape == "circle":
+            size = max(w, h)
+            return size, size
+        return w, h
+
+    def _render_shape(self, w, h, fill, outline):
+        scale = 4
+        img = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        pad = scale
+        if self._shape == "circle":
+            draw.ellipse((pad, pad, w * scale - pad - 1, h * scale - pad - 1),
+                         fill=fill, outline=outline, width=max(3, scale))
+        else:
+            radius = max(10, min(h * scale // 2, 24 * scale))
+            draw.rounded_rectangle((pad, pad, w * scale - pad - 1, h * scale - pad - 1),
+                                   radius=radius, fill=fill, outline=outline, width=max(3, scale))
+        return img.resize((w, h), Image.Resampling.LANCZOS)
+
+    def _redraw(self):
+        self.delete("all")
+        w, h = self._current_size()
+        super().configure(scrollregion=(0, 0, w, h))
+        outline = self._hover_border if self._hovered and not self._disabled else self._border
+        fill = INPUT if self._disabled else self._fill
+        shape = self._render_shape(w, h, fill, outline)
+        self._photo = ImageTk.PhotoImage(shape, master=self)
+        self.create_image(w // 2, h // 2, image=self._photo)
+        if self._anchor == "w":
+            x = max(h // 2, self._padx)
+            anchor = "w"
+        else:
+            x = w // 2
+            anchor = "center"
+        self.create_text(x, h // 2, text=self._text, fill=self._fg,
+                         font=self._font, anchor=anchor)
+
+    def _set_fill(self, fill):
+        self._fill = fill
+        self._redraw()
+
+    def _on_enter(self, _event=None):
+        if not self._disabled:
+            self._hovered = True
+            self._fill = self._hover
+            self._redraw()
+
+    def _on_leave(self, _event=None):
+        if not self._disabled:
+            self._hovered = False
+            self._fill = self._base
+            self._redraw()
+
+    def _on_click(self, _event=None):
+        if not self._disabled and callable(self._command):
+            self._command()
+
+    def configure(self, cnf=None, **kwargs):
+        if isinstance(cnf, str):
+            return super().configure(cnf)
+        if cnf:
+            kwargs.update(cnf)
+        if not kwargs:
+            return super().configure()
+
+        if "bg" in kwargs:
+            self._base = kwargs.pop("bg")
+            if not self._hovered and not self._disabled:
+                self._fill = self._base
+        if "fg" in kwargs:
+            self._fg = kwargs.pop("fg")
+        if "hover" in kwargs:
+            self._hover = kwargs.pop("hover")
+        if "border" in kwargs:
+            self._border = kwargs.pop("border")
+        if "hover_border" in kwargs:
+            self._hover_border = kwargs.pop("hover_border")
+        if "command" in kwargs:
+            self._command = kwargs.pop("command")
+        if "text" in kwargs:
+            self._text = kwargs.pop("text")
+            self._min_w = max(20, self._font.measure(self._text) + self._padx * 2)
+        if "font" in kwargs:
+            self._font = tkfont.Font(font=kwargs.pop("font"))
+            self._min_w = max(20, self._font.measure(self._text) + self._padx * 2)
+            self._min_h = max(20, self._font.metrics("linespace") + self._pady * 2)
+        if "state" in kwargs:
+            self._disabled = str(kwargs.pop("state")) == "disabled"
+            self._hovered = False
+            self._fill = INPUT if self._disabled else self._base
+            super().configure(cursor="arrow" if self._disabled else "hand2")
+
+        extra = {key: kwargs.pop(key) for key in list(kwargs)
+                 if key in {"width", "height", "cursor", "scrollregion", "highlightthickness"}}
+        if extra:
+            super().configure(**extra)
+        self._redraw()
+
+    config = configure
 
 
 def format_duration(seconds: int) -> str:
@@ -513,6 +666,23 @@ def format_duration(seconds: int) -> str:
     if minutes:
         return f"{minutes}min {secs:02d}s"
     return f"{secs}s"
+
+
+def wrap_game_title(title: str, font_obj, max_width: int) -> str:
+    """Quebra o nome apenas nos espaços, mantendo todas as palavras."""
+    words = (title or "Jogo sem nome").split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}" if current else word
+        if current and font_obj.measure(candidate) > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
 
 
 def friendly_date(value: str | None) -> str:
@@ -666,7 +836,7 @@ def icon_cover(icon, width: int, height: int):
 class GameHubApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("GameHub — Biblioteca de jogos")
+        self.title("GameHub v1.2 — Biblioteca")
         self._scale = ui_scale(self)
         # O Tkinter já ajusta as fontes conforme a tela. Aqui escalamos
         # os demais elementos para não deixar tudo pequeno ou borrado.
@@ -711,6 +881,7 @@ class GameHubApp(tk.Tk):
         self._last_canvas_width = 0
         self._exe_icons = {}
         self._show_running_only = False
+        self._card_hover_state = {}
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -767,29 +938,52 @@ class GameHubApp(tk.Tk):
         return max(1, round(value * self._scale)) if value else 0
 
     def _button(self, parent, text, command, bg=ACCENT, fg=TEXT, hover=ACCENT_HOVER, **kwargs):
-        options = dict(text=text, command=command, bg=bg, fg=fg,
-                       activebackground=hover, activeforeground=fg,
-                       relief="flat", bd=0, highlightthickness=0, cursor="hand2", font=font(10, "bold"),
-                       padx=self.px(14), pady=self.px(9))
-        options.update(kwargs)
-        btn = tk.Button(parent, **options)
-        btn.bind("<Enter>", lambda _event: btn.configure(bg=hover) if str(btn["state"]) != "disabled" else None)
-        btn.bind("<Leave>", lambda _event: btn.configure(bg=bg) if str(btn["state"]) != "disabled" else None)
-        return btn
+        button_font = kwargs.pop("font", font(10, "bold"))
+        padx = kwargs.pop("padx", self.px(14))
+        pady = kwargs.pop("pady", self.px(9))
+        anchor = kwargs.pop("anchor", "center")
+        border = kwargs.pop("border", BORDER)
+        hover_border = kwargs.pop("hover_border", border)
+        return ShapeButton(parent, text, command, bg=bg, fg=fg, hover=hover,
+                           font_value=button_font, padx=padx, pady=pady,
+                           anchor=anchor, shape="pill", surface=parent.cget("bg"),
+                           border=border, hover_border=hover_border, **kwargs)
+
+    def _circle_button(self, parent, text, command, bg=INPUT, fg=TEXT, hover=PANEL_HOVER, **kwargs):
+        button_font = kwargs.pop("font", font(12, "bold"))
+        size = kwargs.pop("size", self.px(28))
+        border = kwargs.pop("border", BORDER)
+        hover_border = kwargs.pop("hover_border", ACCENT)
+        return ShapeButton(parent, text, command, bg=bg, fg=fg, hover=hover,
+                           font_value=button_font, padx=self.px(5), pady=self.px(5),
+                           shape="circle", width=size, height=size, surface=parent.cget("bg"),
+                           border=border, hover_border=hover_border, **kwargs)
+
+    def _nav_style(self):
+        # A pequena faixa roxa indica a página atual, sem ocupar espaço da biblioteca.
+        for selected, row, stripe, button in (
+            (not self._show_running_only, self.nav_all_row, self.nav_all_stripe, self.nav_all),
+            (self._show_running_only, self.nav_running_row, self.nav_running_stripe, self.nav_running),
+        ):
+            base = ACTIVE_BG if selected else SIDE
+            stripe.configure(bg=ACCENT if selected else SIDE)
+            row.configure(bg=base)
+            button._gamehub_base = base
+            button.configure(bg=base, fg=TEXT if selected else MUTED)
 
     def _build_layout(self):
         # Uma barra lateral fixa e o restante livre para a biblioteca.
-        sidebar = tk.Frame(self, bg=SIDE, width=self.px(210))
+        sidebar = tk.Frame(self, bg=SIDE, width=self.px(198))
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         tk.Frame(self, bg=BORDER, width=self.px(1)).pack(side="left", fill="y")
 
         brand = tk.Frame(sidebar, bg=SIDE)
-        brand.pack(fill="x", padx=self.px(18), pady=(self.px(22), self.px(31)))
+        brand.pack(fill="x", padx=self.px(18), pady=(self.px(20), self.px(26)))
         icon_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
         try:
             with Image.open(icon_dir / "GameHub.ico") as ico:
-                ico_img = ico.convert("RGBA").resize((self.px(43), self.px(43)), Image.Resampling.LANCZOS)
+                ico_img = ico.convert("RGBA").resize((self.px(40), self.px(40)), Image.Resampling.LANCZOS)
             self._brand_photo = ImageTk.PhotoImage(ico_img, master=self)
             tk.Label(brand, image=self._brand_photo, bg=SIDE).pack(side="left", padx=(0, self.px(11)))
         except (OSError, ValueError, tk.TclError):
@@ -798,26 +992,35 @@ class GameHubApp(tk.Tk):
         bt = tk.Frame(brand, bg=SIDE)
         bt.pack(side="left")
         tk.Label(bt, text="GameHub", bg=SIDE, fg=TEXT,
-                 font=font(19, "bold")).pack(anchor="w")
+                 font=font(18, "bold")).pack(anchor="w")
         tk.Label(bt, text="SUA BIBLIOTECA", bg=SIDE, fg=MUTED,
                  font=font(8, "bold")).pack(anchor="w", pady=(self.px(3), 0))
 
-        tk.Label(sidebar, text="NAVEGAÇÃO", bg=SIDE, fg="#74788E",
-                 font=font(9, "bold")).pack(anchor="w", padx=self.px(25), pady=(0, self.px(12)))
-        self.nav_all = self._button(sidebar, "▦   Biblioteca", self._reset_filters,
-                                    bg="#292342", hover="#382E58", anchor="w")
-        self.nav_all.pack(fill="x", padx=self.px(13), pady=(0, self.px(7)))
-        self.nav_running = self._button(sidebar, "▶   Em execução", self._show_running,
-                                        bg=SIDE, hover=PANEL_HOVER, anchor="w")
-        self.nav_running.pack(fill="x", padx=self.px(13), pady=(0, self.px(7)))
-        self._button(sidebar, "+   Adicionar jogo", self.open_game_form,
-                     bg=SIDE, hover=PANEL_HOVER, anchor="w").pack(fill="x", padx=self.px(13))
+        tk.Label(sidebar, text="NAVEGAÇÃO", bg=SIDE, fg="#80899A",
+                 font=font(8, "bold")).pack(anchor="w", padx=self.px(24), pady=(0, self.px(12)))
+        self.nav_all_row = tk.Frame(sidebar, bg=ACTIVE_BG)
+        self.nav_all_row.pack(fill="x", padx=self.px(12), pady=(0, self.px(6)))
+        self.nav_all_stripe = tk.Frame(self.nav_all_row, bg=ACCENT, width=self.px(3))
+        self.nav_all_stripe.pack(side="left", fill="y")
+        self.nav_all = self._button(self.nav_all_row, "▦   Biblioteca", self._reset_filters,
+                                    bg=ACTIVE_BG, hover="#38304F", anchor="w",
+                                    font=font(10, "bold"), pady=self.px(10))
+        self.nav_all.pack(side="left", fill="x", expand=True)
 
-        tk.Frame(sidebar, bg=BORDER, height=self.px(1)).pack(fill="x", padx=self.px(21), pady=(self.px(30), self.px(18)))
-        tk.Label(sidebar, text="PREFERÊNCIAS", bg=SIDE, fg="#74788E",
-                 font=font(9, "bold")).pack(anchor="w", padx=self.px(25), pady=(0, self.px(10)))
+        self.nav_running_row = tk.Frame(sidebar, bg=SIDE)
+        self.nav_running_row.pack(fill="x", padx=self.px(12), pady=(0, self.px(6)))
+        self.nav_running_stripe = tk.Frame(self.nav_running_row, bg=SIDE, width=self.px(3))
+        self.nav_running_stripe.pack(side="left", fill="y")
+        self.nav_running = self._button(self.nav_running_row, "▷   Em execução", self._show_running,
+                                        bg=SIDE, hover=PANEL_HOVER, anchor="w", fg=MUTED,
+                                        font=font(10, "bold"), pady=self.px(10))
+        self.nav_running.pack(side="left", fill="x", expand=True)
+
+        tk.Frame(sidebar, bg=BORDER, height=self.px(1)).pack(fill="x", padx=self.px(21), pady=(self.px(23), self.px(16)))
+        tk.Label(sidebar, text="ATALHOS", bg=SIDE, fg="#80899A",
+                 font=font(8, "bold")).pack(anchor="w", padx=self.px(25), pady=(0, self.px(10)))
         self._button(sidebar, "⛶   Tela cheia  ·  F11", self._toggle_fullscreen,
-                     bg=SIDE, hover=PANEL_HOVER, anchor="w").pack(fill="x", padx=self.px(13))
+                     bg=SIDE, hover=PANEL_HOVER, fg=MUTED, anchor="w").pack(fill="x", padx=self.px(13))
 
         bottom = tk.Frame(sidebar, bg=SIDE)
         bottom.pack(side="bottom", fill="x", padx=self.px(22), pady=self.px(24))
@@ -825,29 +1028,31 @@ class GameHubApp(tk.Tk):
                      bg=SIDE, hover=PANEL_HOVER, anchor="w").pack(fill="x", pady=(0, self.px(13)))
         tk.Frame(bottom, bg=BORDER, height=self.px(1)).pack(fill="x", pady=(0, self.px(16)))
         self.sidebar_status = tk.Label(bottom, text="●  Nenhum jogo aberto", bg=SIDE,
-                                       fg=MUTED, font=font(10), anchor="w")
+                                       fg=MUTED, font=font(9), anchor="w")
         self.sidebar_status.pack(anchor="w")
-        tk.Label(bottom, text="GameHub v2.0  ·  Windows", bg=SIDE, fg="#74788E",
-                 font=font(9)).pack(anchor="w", pady=(self.px(12), 0))
+        tk.Label(bottom, text="GameHub v1.2", bg=SIDE, fg="#74788E",
+                 font=font(9, "bold")).pack(anchor="w", pady=(self.px(12), 0))
+        tk.Label(bottom, text="Criador:\nGuilherme Fagundes\nde Almeida", bg=SIDE,
+                 fg="#8F9BAE", font=font(8), justify="left").pack(anchor="w", pady=(self.px(4), 0))
 
         main = tk.Frame(self, bg=BG)
         main.pack(side="left", fill="both", expand=True)
 
         header = tk.Frame(main, bg=BG)
-        header.pack(fill="x", padx=self.px(25), pady=(self.px(16), self.px(10)))
+        header.pack(fill="x", padx=self.px(25), pady=(self.px(16), self.px(8)))
         texts = tk.Frame(header, bg=BG)
         texts.pack(side="left")
-        tk.Label(texts, text="BIBLIOTECA", bg=BG, fg=ACCENT_HOVER,
+        tk.Label(texts, text="BIBLIOTECA DE JOGOS", bg=BG, fg=ACCENT_HOVER,
                  font=font(8, "bold")).pack(anchor="w", pady=(0, self.px(3)))
-        tk.Label(texts, text="Meus jogos", bg=BG, fg=TEXT,
-                 font=font(20, "bold")).pack(anchor="w")
+        tk.Label(texts, text="Sua coleção", bg=BG, fg=TEXT,
+                 font=font(18, "bold")).pack(anchor="w")
         self._button(header, "+  Adicionar jogo", self.open_game_form,
-                     font=font(9, "bold"), padx=self.px(14), pady=self.px(8)).pack(side="right", pady=self.px(5))
+                     font=font(9, "bold"), padx=self.px(14), pady=self.px(8)).pack(side="right", pady=self.px(4))
 
         # Indicadores discretos no topo. A grade ocupa o restante da janela.
-        stats = tk.Frame(main, bg=PANEL, highlightthickness=1,
-                         highlightbackground="#292C3B")
-        stats.pack(fill="x", padx=self.px(29), pady=(0, self.px(14)))
+        stats = tk.Frame(main, bg=SIDE, highlightthickness=1,
+                         highlightbackground=BORDER)
+        stats.pack(fill="x", padx=self.px(29), pady=(0, self.px(12)))
         self.stats_labels = {}
         stats_info = [
             ("Jogos", "games", "0"),
@@ -857,14 +1062,14 @@ class GameHubApp(tk.Tk):
         ]
         for index, (caption, key, default) in enumerate(stats_info):
             stats.grid_columnconfigure(index, weight=1, uniform="stat")
-            tile = tk.Frame(stats, bg=PANEL, padx=self.px(11), pady=self.px(9))
+            tile = tk.Frame(stats, bg=SIDE, padx=self.px(10), pady=self.px(7))
             tile.grid(row=0, column=index, sticky="nsew")
-            line = tk.Frame(tile, bg=PANEL)
+            line = tk.Frame(tile, bg=SIDE)
             line.pack(anchor="center")
-            tk.Label(line, text=caption + ":", bg=PANEL, fg=MUTED,
-                     font=font(9)).pack(side="left", padx=(0, self.px(6)))
-            number = tk.Label(line, text=default, bg=PANEL, fg=TEXT,
-                              font=font(11, "bold"))
+            tk.Label(line, text=caption + ":", bg=SIDE, fg=MUTED,
+                     font=font(8)).pack(side="left", padx=(0, self.px(5)))
+            number = tk.Label(line, text=default, bg=SIDE, fg=TEXT,
+                              font=font(10, "bold"))
             number.pack(side="left")
             self.stats_labels[key] = number
             if index < len(stats_info) - 1:
@@ -872,9 +1077,9 @@ class GameHubApp(tk.Tk):
                     row=0, column=index, sticky="nse", pady=self.px(8))
 
         filters = tk.Frame(main, bg=BG)
-        filters.pack(fill="x", padx=self.px(29), pady=(0, self.px(9)))
+        filters.pack(fill="x", padx=self.px(29), pady=(0, self.px(7)))
         tk.Label(filters, text="Todos os jogos", bg=BG, fg=TEXT,
-                 font=font(15, "bold")).pack(side="left")
+                 font=font(13, "bold")).pack(side="left")
         categories = ttk.Combobox(filters, textvariable=self.category_var,
                                   values=["Todas as categorias", *CATEGORIES],
                                   state="readonly", width=18, style="Dark.TCombobox")
@@ -883,7 +1088,7 @@ class GameHubApp(tk.Tk):
         search_frame.pack(side="right", padx=(0, self.px(12)))
         tk.Label(search_frame, text="⌕", bg=INPUT, fg=MUTED, font=font(17)).pack(side="left", padx=(self.px(11), self.px(2)))
         search = tk.Entry(search_frame, textvariable=self.search_var, bg=INPUT, fg=TEXT,
-                          insertbackground=TEXT, relief="flat", font=font(10), bd=0, width=20)
+                          insertbackground=TEXT, relief="flat", font=font(10), bd=0, width=18)
         search.pack(side="left", ipady=self.px(8), padx=(0, self.px(12)))
         # A dica desaparece quando começamos a digitar.
         placeholder = "Buscar jogo..."
@@ -901,7 +1106,7 @@ class GameHubApp(tk.Tk):
         search.bind("<FocusOut>", search_focus_out)
 
         list_outer = tk.Frame(main, bg=BG)
-        list_outer.pack(fill="both", expand=True, padx=(self.px(23), self.px(19)), pady=(0, self.px(11)))
+        list_outer.pack(fill="both", expand=True, padx=(self.px(23), self.px(19)), pady=(0, self.px(10)))
         self.canvas = tk.Canvas(list_outer, bg=BG, highlightthickness=0, bd=0)
         scrollbar = ttk.Scrollbar(list_outer, orient="vertical", command=self.canvas.yview,
                                   style="Dark.Vertical.TScrollbar")
@@ -958,11 +1163,13 @@ class GameHubApp(tk.Tk):
     def _on_canvas_resize(self, event):
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
         # A quantidade de cartões por linha muda conforme o espaço disponível.
-        new_cols = (6 if event.width >= self.px(1550)
-                    else 5 if event.width >= self.px(1240)
-                    else 4 if event.width >= self.px(890)
-                    else 3 if event.width >= self.px(650)
-                    else 2 if event.width >= self.px(430) else 1)
+        new_cols = (8 if event.width >= self.px(1470)
+                    else 7 if event.width >= self.px(1230)
+                    else 6 if event.width >= self.px(985)
+                    else 5 if event.width >= self.px(790)
+                    else 4 if event.width >= self.px(620)
+                    else 3 if event.width >= self.px(460)
+                    else 2 if event.width >= self.px(310) else 1)
         if new_cols != self._cols or abs(event.width - self._last_canvas_width) > self.px(16):
             self._cols = new_cols
             self._last_canvas_width = event.width
@@ -974,8 +1181,9 @@ class GameHubApp(tk.Tk):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _create_cover(self, game, parent):
-        view_w = max(self.px(140), (self.canvas.winfo_width() - self.px(18) * self._cols) // max(1, self._cols))
-        cover_w, cover_h = view_w, self.px(146 if self._compact else 168)
+        view_w = max(self.px(126), (self.canvas.winfo_width() - self.px(17) * self._cols) // max(1, self._cols))
+        # Cada capa ocupa a maior parte do cartão. O restante fica só para o nome e as ações.
+        cover_w, cover_h = view_w, round(view_w * 1.24)
         art, art_type = self._game_art(game)
         if art_type == "custom":
             picture = ImageOps.fit(art.convert("RGB"), (cover_w, cover_h),
@@ -1000,9 +1208,63 @@ class GameHubApp(tk.Tk):
             draw.ellipse((cx + size // 2, cy - size // 2, cx + size, cy), fill="#E5DFFF")
             draw.ellipse((cx + size, cy, cx + size * 3 // 2, cy + size // 2), fill="#E5DFFF")
             picture = picture.resize((cover_w, cover_h), Image.Resampling.LANCZOS)
-        photo = ImageTk.PhotoImage(picture, master=self)
-        self._image_refs.append(photo)
-        label = tk.Label(parent, image=photo, bd=0, bg=PANEL)
+        # O menu fica desenhado na própria capa. Assim não existe outro widget
+        # por cima da imagem que possa deixar um quadrado de fundo aparente.
+        diameter = self.px(30)
+        inset = self.px(6)
+        menu_left = cover_w - diameter - inset
+        menu_top = inset
+
+        def make_menu_image(hovered=False):
+            scale = 4
+            size = diameter * scale
+            overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            painter = ImageDraw.Draw(overlay)
+            border = (165, 153, 235, 185) if hovered else (233, 237, 251, 120)
+            fill = (32, 39, 57, 235) if hovered else (18, 24, 35, 195)
+            painter.ellipse((scale, scale, size - scale - 1, size - scale - 1),
+                            fill=fill, outline=border, width=scale)
+            radius = max(3, round(diameter * 0.055 * scale))
+            gap = max(6, round(diameter * 0.19 * scale))
+            cx, cy = size // 2, size // 2
+            for offset in (-gap, 0, gap):
+                x = cx + offset
+                painter.ellipse((x - radius, cy - radius, x + radius, cy + radius),
+                                fill=(248, 249, 255, 255))
+            badge = overlay.resize((diameter, diameter), Image.Resampling.LANCZOS)
+            composed = picture.convert("RGBA")
+            composed.alpha_composite(badge, (menu_left, menu_top))
+            return ImageTk.PhotoImage(composed.convert("RGB"), master=self)
+
+        normal_photo = make_menu_image(False)
+        hovered_photo = make_menu_image(True)
+        self._image_refs.extend((normal_photo, hovered_photo))
+        label = tk.Label(parent, image=normal_photo, bd=0, bg=PANEL)
+        hover_state = {"active": False}
+
+        def inside_menu(event):
+            return (menu_left <= event.x < menu_left + diameter
+                    and menu_top <= event.y < menu_top + diameter)
+
+        def on_move(event):
+            active = inside_menu(event)
+            if hover_state["active"] != active:
+                hover_state["active"] = active
+                label.configure(image=hovered_photo if active else normal_photo)
+                label.configure(cursor="hand2" if active else "arrow")
+
+        def on_leave(_event):
+            hover_state["active"] = False
+            label.configure(image=normal_photo, cursor="arrow")
+
+        def on_click(event):
+            if inside_menu(event):
+                self._show_game_menu(game["id"], label, offset_x=menu_left,
+                                     offset_y=menu_top + diameter)
+
+        label.bind("<Motion>", on_move, add="+")
+        label.bind("<Leave>", on_leave, add="+")
+        label.bind("<Button-1>", on_click, add="+")
         return label
 
     def render_games(self):
@@ -1012,7 +1274,8 @@ class GameHubApp(tk.Tk):
             widget.destroy()
         self._image_refs = []
         self._card_info = {}
-        for index in range(6):
+        self._card_hover_state = {}
+        for index in range(9):
             self.cards_container.grid_columnconfigure(index, weight=0, uniform="")
         for index in range(self._cols):
             self.cards_container.grid_columnconfigure(index, weight=1, uniform="cards")
@@ -1028,11 +1291,11 @@ class GameHubApp(tk.Tk):
                  and (not self._show_running_only or g["id"] in self.tracker.sessions)]
 
         if not games:
-            empty = tk.Frame(self.cards_container, bg=PANEL, padx=self.px(30), pady=self.px(48),
+            empty = tk.Frame(self.cards_container, bg=PANEL, padx=self.px(28), pady=self.px(42),
                              highlightthickness=1, highlightbackground=BORDER)
             empty.grid(row=0, column=0, columnspan=self._cols, sticky="ew", padx=self.px(5), pady=self.px(12))
             tk.Label(empty, text="▣", bg=PANEL, fg=ACCENT,
-                     font=font(36)).pack(pady=(0, self.px(10)))
+                     font=font(32)).pack(pady=(0, self.px(10)))
             if self._show_running_only:
                 heading = "Nenhum jogo em execução"
                 explanation = "Volte à biblioteca e inicie um jogo para vê-lo aqui."
@@ -1043,74 +1306,138 @@ class GameHubApp(tk.Tk):
                 heading = "Sua biblioteca está vazia"
                 explanation = "Adicione o executável de um jogo para começar."
             tk.Label(empty, text=heading, bg=PANEL, fg=TEXT,
-                     font=font(16, "bold")).pack()
+                     font=font(15, "bold")).pack()
             tk.Label(empty, text=explanation, bg=PANEL, fg=MUTED,
-                     font=font(10)).pack(pady=(self.px(7), self.px(15)))
+                     font=font(9)).pack(pady=(self.px(7), self.px(15)))
             if not self.store.games:
                 self._button(empty, "+  Adicionar primeiro jogo", self.open_game_form).pack()
         for index, game in enumerate(games):
             self._game_card(game, index // self._cols, index % self._cols)
-        self.nav_all.configure(bg=SIDE if self._show_running_only else "#292342")
-        self.nav_running.configure(bg="#292342" if self._show_running_only else SIDE)
+        self._nav_style()
         self._update_stats()
 
+    def _set_card_hover(self, card, hovered: bool, running: bool, surfaces):
+        if not card.winfo_exists():
+            return
+        if self._card_hover_state.get(card) == hovered:
+            return
+        self._card_hover_state[card] = hovered
+        color = CARD_HOVER if hovered else PANEL
+        for widget in surfaces:
+            try:
+                widget.configure(bg=color)
+            except tk.TclError:
+                pass
+        outline = ACCENT if running else HOVER_BORDER if hovered else BORDER
+        card.configure(highlightbackground=outline, highlightcolor=outline)
+
+    def _watch_card_hover(self, card, running: bool, surfaces):
+        # Inclui imagens, textos e espaços do cartão. Não muda o estilo dos botões.
+        def entered(_event):
+            self._set_card_hover(card, True, running, surfaces)
+
+        def left(_event):
+            # Ao passar da capa para o título, o mouse ainda está dentro do card.
+            def check():
+                if not card.winfo_exists():
+                    return
+                x, y = card.winfo_pointerxy()
+                inside = (card.winfo_rootx() <= x < card.winfo_rootx() + card.winfo_width()
+                          and card.winfo_rooty() <= y < card.winfo_rooty() + card.winfo_height())
+                if not inside:
+                    self._set_card_hover(card, False, running, surfaces)
+            self.after(35, check)
+
+        def bind_nested(widget):
+            widget.bind("<Enter>", entered, add="+")
+            widget.bind("<Leave>", left, add="+")
+            for child in widget.winfo_children():
+                bind_nested(child)
+
+        bind_nested(card)
+
+    def _show_game_menu(self, game_id, widget, offset_x=0, offset_y=None):
+        """Deixa as ações secundárias disponíveis sem ocupar o cartão todo."""
+        popup = tk.Menu(self, tearoff=0, bg=PANEL, fg=TEXT,
+                        activebackground=ACCENT, activeforeground=TEXT,
+                        relief="flat", bd=1, font=font(9))
+        popup.add_command(label="Editar jogo", command=lambda: self.open_game_form(game_id))
+        popup.add_separator()
+        popup.add_command(label="Remover da biblioteca", command=lambda: self.delete_game(game_id))
+        try:
+            popup.tk_popup(widget.winfo_rootx() + offset_x,
+                           widget.winfo_rooty() + (offset_y if offset_y is not None else widget.winfo_height()))
+        finally:
+            popup.grab_release()
+
     def _game_card(self, game, row, col):
-        card = tk.Frame(self.cards_container, bg=PANEL,
-                        highlightthickness=1, highlightbackground="#292C3B")
-        card.grid(row=row, column=col, sticky="nsew", padx=self.px(6), pady=self.px(7))
-
-        cover = self._create_cover(game, card)
-        cover.pack(fill="x", expand=False)
-
-        body = tk.Frame(card, bg=PANEL)
-        body.pack(fill="both", expand=True, padx=self.px(13), pady=(self.px(10), self.px(12)))
         running = game["id"] in self.tracker.sessions
         closing = game["id"] in self._closing_games
-        info = tk.Frame(body, bg=PANEL)
-        info.pack(fill="x")
-        tk.Label(info, text=(game.get("category") or "Outros").upper(), bg=PANEL,
-                 fg="#AD9AFF", font=font(8, "bold")).pack(side="left")
+
+        # Capa grande, borda fina e poucas informações. O objetivo é dar espaço aos jogos.
+        card = tk.Frame(self.cards_container, bg=PANEL, bd=0, highlightthickness=self.px(2),
+                        highlightbackground=ACCENT if running else BORDER,
+                        highlightcolor=ACCENT if running else BORDER)
+        card.grid(row=row, column=col, sticky="nsew", padx=self.px(6), pady=self.px(8))
+
+        cover = self._create_cover(game, card)
+        cover.pack(fill="x")
+        category = tk.Label(cover, text=(game.get("category") or "Outros").upper(),
+                            bg="#131924", fg="#E0D9FF", font=font(7, "bold"),
+                            padx=self.px(6), pady=self.px(3))
+        category.place(x=self.px(8), y=self.px(8))
         if running:
-            tk.Label(info, text="● ATIVO", bg=PANEL, fg=GREEN,
-                     font=font(8, "bold")).pack(side="right")
-        title = tk.Label(body, text=game.get("name", "Jogo sem nome"),
-                         bg=PANEL, fg=TEXT, anchor="w", justify="left",
-                         font=font(12, "bold"), wraplength=max(self.px(120),
-                                     self.canvas.winfo_width() // max(1, self._cols) - self.px(38)))
-        title.pack(anchor="w", fill="x", pady=(self.px(5), self.px(5)))
-        time_label = tk.Label(body, bg=PANEL, fg=MUTED,
-                              text=self._time_text(game), font=font(9), anchor="w")
-        time_label.pack(anchor="w")
-        status = tk.Label(body, bg=PANEL, fg=GREEN if running else "#80849C",
-                          text=("● Encerrando..." if closing else "● Em execução" if running
-                                else friendly_date(game.get("last_played"))),
-                          font=font(8), anchor="w")
-        status.pack(anchor="w", pady=(self.px(3), self.px(7)))
-        actions = tk.Frame(body, bg=PANEL)
-        actions.pack(side="bottom", fill="x", pady=(self.px(3), 0))
+            badge = tk.Label(cover, text="● JOGANDO", bg="#143B35", fg=GREEN,
+                             font=font(7, "bold"), padx=self.px(6), pady=self.px(3))
+            badge.place(relx=1, rely=1, x=-self.px(7), y=-self.px(7), anchor="se")
+
+        footer = tk.Frame(card, bg=PANEL, padx=self.px(9), pady=self.px(7))
+        footer.pack(fill="x")
+        title_row = tk.Frame(footer, bg=PANEL)
+        title_row.pack(fill="x")
+        full_name = game.get("name") or "Jogo sem nome"
+        # Os títulos vão para outra linha quando necessário, sem cortar palavras.
+        # O menu fica sobre a capa para não roubar largura do nome.
+        name_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        cell_width = self.canvas.winfo_width() / max(1, self._cols)
+        title_space = max(self.px(96), int(cell_width - self.px(32)))
+        # Se o nome tiver uma palavra longa, reduzimos a fonte antes de quebrá-la.
+        longest = max(full_name.split(), key=len, default="")
+        while name_font.measure(longest) > title_space and int(name_font.cget("size")) > 7:
+            name_font.configure(size=int(name_font.cget("size")) - 1)
+        wrapped_name = wrap_game_title(full_name, name_font, title_space)
+        name_label = tk.Label(title_row, text=wrapped_name, bg=PANEL, fg=TEXT,
+                              font=name_font, anchor="nw", justify="left", wraplength=0)
+        name_label.pack(side="left", fill="x", expand=True)
+        # O círculo dos três pontos já está integrado à própria imagem da capa.
+
+        details = tk.Frame(footer, bg=PANEL)
+        details.pack(fill="x", pady=(self.px(6), 0))
+        time_label = tk.Label(details, text=self._time_text(game), bg=PANEL, fg=MUTED,
+                              font=font(8), anchor="w")
+        time_label.pack(side="left", fill="x", expand=True)
         if running:
-            btn = self._button(actions, "Encerrando..." if closing else "■  Fechar jogo",
-                               lambda gid=game["id"]: self.stop_game(gid),
-                               bg="#753949", hover="#97495C", font=font(9, "bold"),
-                               padx=self.px(12), pady=self.px(8))
+            button = self._button(details, "Fechando…" if closing else "■ Fechar",
+                                  lambda gid=game["id"]: self.stop_game(gid),
+                                  bg="#54323E", hover="#784553", font=font(8, "bold"),
+                                  padx=self.px(7), pady=self.px(5))
             if closing:
-                btn.configure(state="disabled", cursor="arrow")
-            btn.pack(side="left")
+                button.configure(state="disabled", cursor="arrow")
         else:
-            self._button(actions, "▶  Jogar", lambda gid=game["id"]: self.launch_game(gid),
-                         bg=ACCENT, hover=ACCENT_HOVER, font=font(9, "bold"),
-                         padx=self.px(14), pady=self.px(8)).pack(side="left")
-        self._button(actions, "Editar", lambda gid=game["id"]: self.open_game_form(gid),
-                     bg=INPUT, hover=BORDER, font=font(9), padx=self.px(11),
-                     pady=self.px(8)).pack(side="left", padx=(self.px(5), 0))
-        self._button(actions, "×", lambda gid=game["id"]: self.delete_game(gid),
-                     bg=INPUT, hover="#66323D", font=font(12),
-                     padx=self.px(9), pady=self.px(5)).pack(side="right")
-        self._card_info[game["id"]] = (time_label, status)
+            button = self._button(details, "▶ Jogar",
+                                  lambda gid=game["id"]: self.launch_game(gid),
+                                  bg=ACCENT, hover=ACCENT_HOVER, font=font(8, "bold"),
+                                  padx=self.px(8), pady=self.px(5))
+        button.pack(side="right", padx=(self.px(3), 0))
+
+        # O tempo continua sendo atualizado sem reconstruir a biblioteca a cada segundo.
+        self._card_info[game["id"]] = (time_label, name_label)
+        self._watch_card_hover(card, running,
+                               [card, footer, title_row, details, name_label, time_label])
 
     def _time_text(self, game):
         elapsed = self.tracker.elapsed(game["id"])
-        return "Tempo jogado: " + format_duration(int(game.get("seconds_played", 0)) + elapsed)
+        return format_duration(int(game.get("seconds_played", 0)) + elapsed)
 
     def _update_stats(self):
         if not hasattr(self, "stats_labels"):
