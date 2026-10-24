@@ -2,10 +2,10 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 set "APP_DIR=%CD%"
-title GameHub v1.7.0 - Criar executavel
+title GameHub v2.0.0 - Criar executavel
 
 echo ===========================================
-echo   GAMEHUB v1.7.0 - GERAR EXECUTAVEL
+echo   GAMEHUB v2.0.0 - GERAR EXECUTAVEL
 echo ===========================================
 echo.
 echo Pasta do projeto: "%APP_DIR%"
