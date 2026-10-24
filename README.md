@@ -49,3 +49,14 @@ Se você quer gerar seu próprio executável
 Com o Python instalado, execute criar_exe.bat. Ele instala as dependências necessárias para a compilação e gera o GameHub.exe na própria pasta do projeto, sem deixar as pastas temporárias de compilação.
 
 Depois de criado, o executável pode ser aberto normalmente
+
+## Capturas de tela
+
+### Tela inicial
+![Tela inicial do GameHub](prints/Inicio.png)
+
+### Adicionar jogo
+![Cadastro de jogos no GameHub](prints/Adicionar%20jogo.png)
+
+### Jogo em execução
+![Jogo em execução no GameHub](prints/Jogo%20rodando.png)
